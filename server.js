@@ -1,183 +1,158 @@
 "use strict";
 /**
- * LLAVES: servidor de la página, API y sincronización en vivo (SSE).
+ * LLAVES: página, API de salas y sincronización en vivo (SSE).
  *
- * - Sirve public/index.html y la API en el mismo puerto.
- * - Guarda el torneo activo y el historial en Postgres si hay DATABASE_URL;
- *   si no, en memoria.
- * - Solo quien manda la cabecera x-admin-key === ADMIN_KEY puede editar;
- *   los demás ven en vivo.
+ * - Cada torneo vive en una "sala" con un código corto para compartir.
+ * - Quien crea la sala recibe una clave de edición; los demás solo ven.
+ * - Todo vive en memoria: nada se guarda en disco ni en base de datos.
+ *   Una sala se borra sola SALA_TTL_HORAS después de su último cambio.
  *
- * Variables de entorno:
- *   ADMIN_KEY        clave para editar (sin ella se genera una al arrancar).
- *   DATABASE_URL     conexión Postgres (opcional).
- *   ALLOWED_ORIGIN   orígenes permitidos para CORS si la página vive en otro
- *                    dominio; separados por coma. Por defecto "*".
- *   PORT             puerto (3000 por defecto).
+ * Variables de entorno (todas opcionales):
+ *   PORT              puerto (3000)
+ *   SALA_TTL_HORAS    horas sin cambios antes de borrar una sala (24)
+ *   MAX_SALAS         salas activas como máximo (500)
  */
 
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
 
-const app = express();
-app.use(express.json({ limit: "4mb" }));
-
-// Sin ADMIN_KEY se genera una clave aleatoria por arranque (nunca una fija conocida).
-const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(9).toString("base64url");
-if (!process.env.ADMIN_KEY) console.log("ADMIN_KEY no definida; clave de esta sesión: " + ADMIN_KEY);
 const PORT = process.env.PORT || 3000;
-const USE_PG = !!process.env.DATABASE_URL;
-const ORIGINS = (process.env.ALLOWED_ORIGIN || "*").split(",").map(s => s.trim());
+const TTL_MS = (Number(process.env.SALA_TTL_HORAS) || 24) * 3600 * 1000;
+const MAX_SALAS = Number(process.env.MAX_SALAS) || 500;
+const MAX_ESPECTADORES = 300;      // conexiones en vivo por sala
+const CREAR_POR_HORA = 15;         // salas nuevas por IP por hora
 
-/* ---------- CORS ---------- */
+const app = express();
+app.disable("x-powered-by");
+app.set("trust proxy", 1);          // Railway pone un proxy delante: la IP real viene en X-Forwarded-For
+app.use(express.json({ limit: "512kb" }));
+
+/* ---------- cabeceras de seguridad ---------- */
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
 app.use((req, res, next) => {
-  const origin = req.get("origin");
-  if (ORIGINS.includes("*")) res.set("Access-Control-Allow-Origin", "*");
-  else if (origin && ORIGINS.includes(origin)) res.set("Access-Control-Allow-Origin", origin);
-  res.set("Vary", "Origin");
-  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, x-admin-key");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  res.set({
+    "Content-Security-Policy": CSP,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+  });
+  if (req.secure) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
 });
 
-/* ---------- storage ---------- */
-let mem = null;          // torneo activo
-let memHistory = [];     // historial (fallback en memoria)
-let pool = null;
+/* ---------- salas en memoria ---------- */
+const salas = new Map(); // codigo -> { state, keyHash, updated, clients:Set }
+const ALFABETO = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // sin 0/O, 1/I/L
 
-if (USE_PG) {
-  const { Pool } = require("pg");
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-  });
-}
-
-async function initDb() {
-  if (!USE_PG) return;
-  await pool.query(
-    "CREATE TABLE IF NOT EXISTS app_state (id int PRIMARY KEY, data jsonb, updated_at timestamptz DEFAULT now())"
-  );
-  await pool.query(
-    "CREATE TABLE IF NOT EXISTS history (id text PRIMARY KEY, name text, date bigint, data jsonb)"
-  );
-}
-
-async function getState() {
-  if (!USE_PG) return mem;
-  const r = await pool.query("SELECT data FROM app_state WHERE id = 1");
-  return r.rows[0] ? r.rows[0].data : null;
-}
-
-async function setState(data) {
-  if (!USE_PG) { mem = data; return; }
-  await pool.query(
-    "INSERT INTO app_state (id, data, updated_at) VALUES (1, $1, now()) " +
-    "ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = now()",
-    [data]
-  );
-}
-
-/* ---------- history (torneos guardados) ---------- */
-async function getHistory() {
-  if (!USE_PG) return memHistory.slice().sort((a, b) => b.date - a.date);
-  const r = await pool.query("SELECT id, name, date, data FROM history ORDER BY date DESC");
-  return r.rows.map(row => ({ id: row.id, name: row.name, date: Number(row.date), state: row.data }));
-}
-async function upsertHistory(entry) {
-  if (!USE_PG) {
-    const i = memHistory.findIndex(e => e.id === entry.id);
-    if (i >= 0) memHistory[i] = entry; else memHistory.push(entry);
-    return;
+function nuevoCodigo() {
+  for (;;) {
+    const b = crypto.randomBytes(6);
+    const c = Array.from(b, (x) => ALFABETO[x % ALFABETO.length]).join("");
+    if (!salas.has(c)) return c;
   }
-  await pool.query(
-    "INSERT INTO history (id, name, date, data) VALUES ($1, $2, $3, $4) " +
-    "ON CONFLICT (id) DO UPDATE SET name = $2, date = $3, data = $4",
-    [entry.id, entry.name, entry.date, entry.state]
-  );
 }
-async function deleteHistory(id) {
-  if (!USE_PG) { memHistory = memHistory.filter(e => e.id !== id); return; }
-  await pool.query("DELETE FROM history WHERE id = $1", [id]);
+const hash = (s) => crypto.createHash("sha256").update(String(s)).digest();
+function claveValida(sala, key) {
+  if (typeof key !== "string" || !key) return false;
+  return crypto.timingSafeEqual(sala.keyHash, hash(key));
+}
+function sala(req, res) {
+  const s = salas.get(String(req.params.codigo || "").toUpperCase());
+  if (!s) res.status(404).json({ error: "La sala no existe o ya expiró." });
+  return s;
 }
 
-/* ---------- SSE ---------- */
-const clients = new Set();
-function broadcast(state) {
-  const payload = "data: " + JSON.stringify({ state }) + "\n\n";
-  for (const res of clients) {
-    try { res.write(payload); } catch (_) { /* ignore */ }
+// Borra salas sin cambios dentro del TTL.
+setInterval(() => {
+  const limite = Date.now() - TTL_MS;
+  for (const [c, s] of salas) {
+    if (s.updated < limite) {
+      for (const r of s.clients) { try { r.end(); } catch (_) {} }
+      salas.delete(c);
+    }
   }
+}, 10 * 60 * 1000).unref();
+
+// Límite simple de creación por IP (ventana de una hora).
+const creaciones = new Map();
+function puedeCrear(ip) {
+  const ahora = Date.now();
+  const v = (creaciones.get(ip) || []).filter((t) => ahora - t < 3600 * 1000);
+  if (v.length >= CREAR_POR_HORA) { creaciones.set(ip, v); return false; }
+  v.push(ahora);
+  creaciones.set(ip, v);
+  return true;
+}
+setInterval(() => creaciones.clear(), 3600 * 1000).unref();
+
+function broadcast(s) {
+  const payload = "data: " + JSON.stringify({ state: s.state }) + "\n\n";
+  for (const r of s.clients) { try { r.write(payload); } catch (_) {} }
 }
 
 /* ---------- API ---------- */
-function isAdmin(req) { return req.get("x-admin-key") === ADMIN_KEY; }
+app.get("/api/health", (req, res) => res.json({ ok: true, salas: salas.size }));
 
-app.get("/api/health", (req, res) => res.json({ ok: true, service: "llaves" }));
-
-app.get("/api/state", async (req, res) => {
-  try { res.json({ state: await getState() }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "db" }); }
+app.post("/api/salas", (req, res) => {
+  if (salas.size >= MAX_SALAS) return res.status(503).json({ error: "Hay demasiadas salas activas. Probá en un rato." });
+  if (!puedeCrear(req.ip)) return res.status(429).json({ error: "Creaste muchas salas seguidas. Esperá unos minutos." });
+  const codigo = nuevoCodigo();
+  const key = crypto.randomBytes(18).toString("base64url");
+  salas.set(codigo, { state: null, keyHash: hash(key), updated: Date.now(), clients: new Set() });
+  res.status(201).json({ codigo, key, expiraEnHoras: TTL_MS / 3600000 });
 });
 
-app.get("/api/admin/verify", (req, res) => res.json({ ok: isAdmin(req) }));
-
-app.post("/api/state", async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: "forbidden" });
-  const state = req.body ? req.body.state : null;
-  try { await setState(state); broadcast(state); res.json({ ok: true }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "db" }); }
+app.get("/api/salas/:codigo", (req, res) => {
+  const s = sala(req, res); if (!s) return;
+  res.set("Cache-Control", "no-store").json({ state: s.state });
 });
 
-/* ---------- history endpoints ---------- */
-app.get("/api/history", async (req, res) => {
-  try { res.json({ items: await getHistory() }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "db" }); }
+app.post("/api/salas/:codigo/verificar", (req, res) => {
+  const s = sala(req, res); if (!s) return;
+  res.json({ ok: claveValida(s, req.get("x-edit-key")) });
 });
 
-app.post("/api/history", async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: "forbidden" });
-  const entry = req.body ? req.body.entry : null;
-  if (!entry || !entry.id) return res.status(400).json({ error: "bad_entry" });
-  try { await upsertHistory(entry); res.json({ ok: true }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "db" }); }
+app.post("/api/salas/:codigo", (req, res) => {
+  const s = sala(req, res); if (!s) return;
+  if (!claveValida(s, req.get("x-edit-key"))) return res.status(401).json({ error: "Clave de edición incorrecta." });
+  const state = req.body ? req.body.state : undefined;
+  if (state !== null && (typeof state !== "object" || Array.isArray(state))) return res.status(400).json({ error: "Estado inválido." });
+  s.state = state;
+  s.updated = Date.now();
+  broadcast(s);
+  res.json({ ok: true });
 });
 
-app.delete("/api/history", async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: "forbidden" });
-  const id = req.query.id;
-  if (!id) return res.status(400).json({ error: "no_id" });
-  try { await deleteHistory(String(id)); res.json({ ok: true }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "db" }); }
-});
-
-app.get("/api/events", async (req, res) => {
-  res.set({
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
+app.get("/api/salas/:codigo/eventos", (req, res) => {
+  const s = sala(req, res); if (!s) return;
+  if (s.clients.size >= MAX_ESPECTADORES) return res.status(503).json({ error: "La sala está llena." });
+  res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   if (res.flushHeaders) res.flushHeaders();
   res.write("retry: 3000\n\n");
-  try { res.write("data: " + JSON.stringify({ state: await getState() }) + "\n\n"); }
-  catch (_) { /* ignore */ }
-  clients.add(res);
+  res.write("data: " + JSON.stringify({ state: s.state }) + "\n\n");
+  s.clients.add(res);
   const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch (_) {} }, 25000);
-  req.on("close", () => { clearInterval(ping); clients.delete(res); });
+  req.on("close", () => { clearInterval(ping); s.clients.delete(res); });
 });
+
+app.use("/api", (req, res) => res.status(404).json({ error: "Ruta no encontrada." }));
 
 /* ---------- página ---------- */
 app.use(express.static(path.join(__dirname, "public"), {
   setHeaders: (res, file) => { if (file.endsWith(".html")) res.set("Cache-Control", "no-cache"); },
 }));
 
-/* ---------- boot ---------- */
-initDb()
-  .then(() => app.listen(PORT, () => console.log("LLAVES en http://localhost:" + PORT + (USE_PG ? " (Postgres)" : " (memoria)"))))
-  .catch((e) => {
-    console.error("DB init falló:", e.message);
-    app.listen(PORT, () => console.log("LLAVES en http://localhost:" + PORT + " (memoria, DB falló)"));
-  });
+app.listen(PORT, () => console.log("LLAVES en http://localhost:" + PORT + " (salas en memoria, TTL " + TTL_MS / 3600000 + " h)"));

@@ -477,6 +477,15 @@
     text-transform: uppercase; letter-spacing: 0.08em;
   }
   .sync-pill .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #36d399; }
+  .share { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 22px; padding: 12px 14px; border: 1px solid var(--line, #ffffff1f); border-radius: 14px; }
+  .share-code { font-family: "Spline Sans Mono", monospace; font-size: 13px; letter-spacing: 0.08em; }
+  .share-code b { font-size: 18px; letter-spacing: 0.18em; margin-left: 6px; }
+  .share-note { flex-basis: 100%; font-size: 12px; opacity: 0.6; }
+  .join { margin-top: 26px; display: grid; gap: 10px; justify-items: center; }
+  .join label { font-size: 13px; opacity: 0.8; }
+  .join-row { display: flex; gap: 8px; }
+  .join input { width: 9ch; text-transform: uppercase; letter-spacing: 0.2em; font: 600 18px "Spline Sans Mono", monospace; text-align: center; padding: 10px; border-radius: 10px; border: 1px solid var(--line, #ffffff2a); background: transparent; color: inherit; }
+  .join-new { font-size: 13px; opacity: 0.75; }
   .waiting {
     text-align: center; padding: 80px 20px; color: var(--muted);
     animation: rise 420ms var(--ease-out) both;
@@ -626,7 +635,7 @@
       <button class="btn btn-ghost icon-btn" id="btnTheme" type="button" aria-label="Cambiar tema" title="Cambiar tema"><span id="themeIcon">☾</span></button>
       <button class="btn btn-ghost" id="btnPrint" type="button">🖨 Imprimir</button>
       <button class="btn btn-ghost" id="btnUnlock" type="button">🔓 Editar</button>
-      <button class="btn btn-ghost admin-only" id="btnLock" type="button">🔒 Salir edición</button>
+      <button class="btn btn-ghost" id="btnLock" type="button" hidden>🔒 Salir edición</button>
       <button class="btn btn-ghost admin-only" id="btnSave" hidden>⭳ Guardar</button>
       <button class="btn btn-ghost admin-only" id="btnHistory" type="button">🗂 Historial</button>
       <button class="btn btn-ghost admin-only" id="btnExport" type="button">⤓ Exportar</button>
@@ -637,11 +646,27 @@
     </div>
   </header>
 
+  <!-- SALA: código y links para compartir -->
+  <div class="share" id="shareBar" hidden>
+    <span class="share-code">Sala <b id="salaCode">——</b></span>
+    <button class="btn btn-ghost" id="btnCopyView" type="button">🔗 Copiar link para ver</button>
+    <button class="btn btn-ghost admin-only" id="btnCopyEdit" type="button">🔑 Copiar link de organizador</button>
+    <span class="share-note">Se borra 24 h después del último cambio. Exportá el JSON si querés guardarlo.</span>
+  </div>
+
   <!-- WAITING (read-only, no tournament yet) -->
   <section id="waitingView" class="hidden">
     <div class="waiting">
-      <div class="big">Sin torneo activo</div>
-      <p>Esperando a que el organizador cree uno. La pantalla se actualizará sola.</p>
+      <div class="big" id="waitTitle">Sin torneo activo</div>
+      <p id="waitMsg">Esperando a que el organizador cree uno. La pantalla se actualizará sola.</p>
+      <div class="join">
+        <label for="joinCode">¿Tenés un código de sala?</label>
+        <div class="join-row">
+          <input id="joinCode" maxlength="6" autocomplete="off" spellcheck="false" placeholder="ABC234">
+          <button class="btn" id="btnJoin" type="button">Entrar</button>
+        </div>
+        <a class="join-new" href="/">o armá tu propio torneo</a>
+      </div>
     </div>
   </section>
 
@@ -778,31 +803,53 @@ let selectedLegs = 1; // 1 = solo ida, 2 = ida y vuelta
 
 const KEY_SAVED = "llaves.saved.v1";
 const KEY_THEME = "llaves.theme";
-const KEY_ADMIN = "llaves.adminkey";
 
-/* ---------- sync / roles ---------- */
-let IS_ADMIN = false;   // can edit
-let READONLY = true;    // others: view only
+/* ---------- sync / roles (salas) ---------- */
+let IS_ADMIN = false;   // puede editar esta sala
+let READONLY = true;    // espectador
 let evtSource = null;   // SSE
 let pushTimer = null;
 
-function adminKey() { return sessionStorage.getItem(KEY_ADMIN) || localStorage.getItem(KEY_ADMIN) || ""; }
+// La clave de edición de cada sala vive solo en este navegador.
+const KEY_SALAS = "llaves.salas";
+let SALA = (new URLSearchParams(location.search).get("sala") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) || null;
+function salasGuardadas() { try { return JSON.parse(localStorage.getItem(KEY_SALAS)) || {}; } catch { return {}; } }
+function guardarClave(c, k) { const m = salasGuardadas(); m[c] = k; try { localStorage.setItem(KEY_SALAS, JSON.stringify(m)); } catch {} }
+function adminKey() { return SALA ? salasGuardadas()[SALA] || "" : ""; }
+// Link de organizador: ?sala=ABC234#k=CLAVE → guarda la clave y la quita de la barra de direcciones.
+(function () {
+  const m = location.hash.match(/k=([\w-]+)/);
+  if (SALA && m) { guardarClave(SALA, m[1]); history.replaceState(null, "", location.pathname + "?sala=" + SALA); }
+})();
+const salaUrl = (path = "") => API_BASE + "/api/salas/" + SALA + path;
 
 async function verifyAdmin(key) {
+  if (!SALA || !key) return false;
   try {
-    const r = await fetch(API_BASE + "/api/admin/verify", { headers: { "x-admin-key": key } });
-    const j = await r.json();
-    return !!j.ok;
+    const r = await fetch(salaUrl("/verificar"), { method: "POST", headers: { "x-edit-key": key } });
+    return !!(await r.json()).ok;
   } catch { return false; }
 }
 
+// null = sala sin torneo, "expirada" = no existe, undefined = sin conexión
 async function serverGet() {
+  if (!SALA) return null;
   try {
-    const r = await fetch(API_BASE + "/api/state", { cache: "no-store" });
+    const r = await fetch(salaUrl(), { cache: "no-store" });
+    if (r.status === 404) return "expirada";
     if (!r.ok) return undefined;
-    const j = await r.json();
-    return j.state || null;
+    return (await r.json()).state || null;
   } catch { return undefined; }
+}
+
+async function crearSala() {
+  const r = await fetch(API_BASE + "/api/salas", { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "No se pudo crear la sala.");
+  SALA = j.codigo;
+  guardarClave(j.codigo, j.key);
+  history.replaceState(null, "", location.pathname + "?sala=" + SALA);
+  showShare();
 }
 
 function schedulePush() {
@@ -812,22 +859,22 @@ function schedulePush() {
 }
 async function doPush() {
   try {
-    await fetch(API_BASE + "/api/state", {
+    if (!SALA) await crearSala();
+    const r = await fetch(salaUrl(), {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-admin-key": adminKey() },
+      headers: { "Content-Type": "application/json", "x-edit-key": adminKey() },
       body: JSON.stringify({ state: STATE || null }),
     });
-    setSyncPill(true);
-    // si el torneo activo está en el historial, mantener su snapshot en la base
-    if (STATE && STATE._id && STATE._name) {
-      historyUpsert({ id: STATE._id, name: STATE._name, date: STATE._date || Date.now(), state: STATE });
-    }
-  } catch { setSyncPill(false); }
+    setSyncPill(r.ok);
+  } catch (e) {
+    setSyncPill(false);
+    if (e && e.message) uiAlert(e.message, { title: "No se pudo compartir" });
+  }
 }
 
 function subscribeLive() {
-  if (evtSource) return;
-  evtSource = new EventSource(API_BASE + "/api/events");
+  if (evtSource || !SALA) return;
+  evtSource = new EventSource(salaUrl("/eventos"));
   evtSource.onmessage = (e) => {
     let d; try { d = JSON.parse(e.data); } catch { return; }
     applyRemote(d.state);
@@ -842,6 +889,23 @@ function applyRemote(state) {
   if (!STATE.format) STATE.format = STATE.wb ? "double" : (STATE.fixtures ? "league" : "elim");
   showTournament();
 }
+
+function showShare() {
+  $("#shareBar").hidden = !SALA;
+  if (SALA) $("#salaCode").textContent = SALA;
+}
+async function copiar(texto, que) {
+  try { await navigator.clipboard.writeText(texto); await uiAlert("Listo, copiaste el " + que + ".", { title: "Copiado" }); }
+  catch { await uiPrompt("Copiá este " + que + ":", { title: "Copiar", value: texto }); }
+}
+$("#btnCopyView").addEventListener("click", () => copiar(location.origin + "/?sala=" + SALA, "link para ver"));
+$("#btnCopyEdit").addEventListener("click", () => copiar(location.origin + "/?sala=" + SALA + "#k=" + adminKey(), "link de organizador (no lo compartas con el público)"));
+$("#btnJoin").addEventListener("click", () => {
+  const c = $("#joinCode").value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (c.length === 6) location.href = "/?sala=" + c;
+  else uiAlert("El código tiene 6 letras y números, por ejemplo ABC234.", { title: "Código incompleto" });
+});
+$("#joinCode").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btnJoin").click(); });
 
 /* ---------- persistence ---------- */
 function save(state) {
@@ -864,32 +928,17 @@ function toggleTheme() {
   applyTheme(cur === "light" ? "dark" : "light");
 }
 
-/* ---------- saved tournaments (history en Postgres) ---------- */
+/* ---------- torneos guardados (solo en este navegador) ---------- */
 let historyCache = [];
-async function historyList() {
-  try { const r = await fetch(API_BASE + "/api/history", { cache: "no-store" }); const j = await r.json(); return j.items || []; }
-  catch { return []; }
-}
+async function historyList() { try { return JSON.parse(localStorage.getItem(KEY_SAVED)) || []; } catch { return []; } }
 async function historyUpsert(entry) {
-  try {
-    await fetch(API_BASE + "/api/history", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-admin-key": adminKey() },
-      body: JSON.stringify({ entry }),
-    });
-  } catch { /* ignore */ }
+  const arr = await historyList();
+  const i = arr.findIndex(e => e.id === entry.id);
+  if (i >= 0) arr[i] = entry; else arr.push(entry);
+  try { localStorage.setItem(KEY_SAVED, JSON.stringify(arr)); } catch {}
 }
 async function historyDelete(id) {
-  try { await fetch(API_BASE + "/api/history?id=" + encodeURIComponent(id), { method: "DELETE", headers: { "x-admin-key": adminKey() } }); }
-  catch { /* ignore */ }
-}
-// migración: si quedan torneos en localStorage, súbelos a la base y limpia
-async function migrateLocalHistory() {
-  if (!IS_ADMIN) return;
-  let local; try { local = JSON.parse(localStorage.getItem(KEY_SAVED)) || []; } catch { local = []; }
-  if (!local.length) return;
-  for (const e of local) await historyUpsert(e);
-  localStorage.removeItem(KEY_SAVED);
+  try { localStorage.setItem(KEY_SAVED, JSON.stringify((await historyList()).filter(e => e.id !== id))); } catch {}
 }
 
 function fmtDate(ts) {
@@ -2297,17 +2346,17 @@ function applyRoleUI() {
 }
 
 async function unlockEditing() {
-  const raw = await uiPrompt("Ingresa el PIN de organizador:", { title: "🔓 Modo edición", okText: "Entrar" });
+  if (!SALA) return;
+  const raw = await uiPrompt("Pegá la clave de edición de esta sala (viene en el link de organizador):", { title: "🔓 Modo edición", okText: "Entrar" });
   if (raw == null) return;
   const key = raw.trim();
   if (!key) return;
   const ok = await verifyAdmin(key);
-  if (!ok) { await uiAlert("PIN incorrecto.", { title: "Acceso denegado" }); return; }
-  sessionStorage.setItem(KEY_ADMIN, key);
+  if (!ok) { await uiAlert("Esa clave no es de esta sala.", { title: "Acceso denegado" }); return; }
+  guardarClave(SALA, key);
   IS_ADMIN = true; READONLY = false;
   if (evtSource) { evtSource.close(); evtSource = null; } // admin = fuente de verdad
   applyRoleUI();
-  migrateLocalHistory();
   // re-sync from server then show
   const srv = await serverGet();
   STATE = (srv === undefined) ? STATE : srv;
@@ -2316,8 +2365,6 @@ async function unlockEditing() {
 }
 
 async function lockEditing() {
-  sessionStorage.removeItem(KEY_ADMIN);
-  localStorage.removeItem(KEY_ADMIN);
   IS_ADMIN = false; READONLY = true;
   applyRoleUI();
   closeHistory();
@@ -2338,12 +2385,29 @@ async function lockEditing() {
 (async function boot() {
   applyTheme(localStorage.getItem(KEY_THEME) === "light" ? "light" : "dark");
 
-  const key = adminKey();
-  IS_ADMIN = key ? await verifyAdmin(key) : false;
+  // Sin sala: cualquiera arma su torneo; la sala se crea al generar.
+  if (!SALA) {
+    IS_ADMIN = true; READONLY = false;
+    applyRoleUI();
+    syncCount(8);
+    showSetup();
+    return;
+  }
+
+  showShare();
+  IS_ADMIN = await verifyAdmin(adminKey());
   READONLY = !IS_ADMIN;
   applyRoleUI();
 
   const srv = await serverGet();
+  if (srv === "expirada") {
+    $("#shareBar").hidden = true;
+    $("#waitTitle").textContent = "Esta sala ya no existe";
+    $("#waitMsg").textContent = "Las salas se borran 24 horas después de su último cambio. Pedile el código nuevo a quien organiza, o armá tu propio torneo.";
+    $("#btnUnlock").hidden = true;
+    showWaiting();
+    return;
+  }
   if (srv && srv.teams && (srv.rounds || srv.fixtures || srv.wb)) {
     STATE = srv;
     if (!STATE.format) STATE.format = STATE.wb ? "double" : (STATE.fixtures ? "league" : "elim");
@@ -2357,8 +2421,7 @@ async function lockEditing() {
     showWaiting();
   }
 
-  if (!IS_ADMIN) subscribeLive(); // viewers reciben cambios en vivo
-  else migrateLocalHistory();     // sube historial local viejo a la base (una vez)
+  if (!IS_ADMIN) subscribeLive();
 })();
 </script>
 </body>

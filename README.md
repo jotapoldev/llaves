@@ -1,14 +1,18 @@
 # LLAVES
 
-Generador de torneos con llaves en vivo. Armás el torneo, marcás los resultados y todos los que tengan el link lo ven actualizarse al instante, sin recargar.
+Generador de torneos con llaves en vivo. Armás el torneo y se crea una sala con un código; quien tenga el link ve el cuadro actualizarse al instante, sin recargar y sin crear cuenta.
+
+Pruebalo en **[llaves.jotapol.com](https://llaves.jotapol.com)**.
 
 ![Torneo en vivo](docs/screenshots/en-vivo.png)
 
 - **Tres formatos:** liga (ida o ida y vuelta), eliminación directa y doble eliminación con gran final.
-- **En vivo:** el organizador edita con una clave; los demás ven los cambios en tiempo real (Server-Sent Events).
+- **Salas con código:** cada torneo tiene un código de 6 caracteres. El link para ver se comparte; el link de organizador trae la clave para editar.
+- **En vivo:** los espectadores ven cada resultado al instante (Server-Sent Events).
+- **Sin datos guardados:** todo vive en memoria y la sala se borra 24 horas después de su último cambio. Sin cuentas, sin base de datos, sin cookies.
 - **Posiciones automáticas:** tabla de liga con goles y diferencia; en eliminación, hasta qué ronda llegó cada equipo.
 - **PDF tipo póster:** imprime el cuadro con el campeón al centro.
-- **Historial:** guarda torneos terminados y los vuelve a abrir.
+- **Historial local:** guarda torneos en tu navegador para volver a abrirlos.
 - **Exportar e importar** cualquier torneo en JSON.
 
 | Configurar | En el celular |
@@ -21,18 +25,14 @@ Necesitás Node 18 o más nuevo.
 
 ```bash
 npm install
-ADMIN_KEY=tu-clave npm start
+npm start      # http://localhost:3000
+npm test
 ```
-
-Abrí http://localhost:3000, tocá **Editar** y escribí tu clave. Si no definís `ADMIN_KEY`, se genera una al arrancar y sale en la consola.
-
-Sin base de datos, el torneo vive en memoria. Para que sobreviva a reinicios, definí `DATABASE_URL` con una conexión de Postgres; las tablas se crean solas.
 
 | Variable | Para qué |
 | --- | --- |
-| `ADMIN_KEY` | Clave para editar. Sin ella se genera una por arranque. |
-| `DATABASE_URL` | Postgres opcional para guardar el torneo y el historial. |
-| `ALLOWED_ORIGIN` | Solo si servís la página desde otro dominio (CORS). Varios separados por coma. |
+| `SALA_TTL_HORAS` | Horas sin cambios antes de borrar una sala. 24 por defecto. |
+| `MAX_SALAS` | Salas activas como máximo. 500 por defecto. |
 | `PORT` | Puerto, 3000 por defecto. |
 
 ## Cómo está hecho
@@ -41,23 +41,23 @@ Un solo `server.js` (Express) sirve la página y la API en el mismo puerto. La p
 
 | Ruta | Quién | Qué hace |
 | --- | --- | --- |
-| `GET /api/state` | todos | Torneo activo |
-| `GET /api/events` | todos | Cambios en vivo (SSE) |
-| `POST /api/state` | admin | Guarda y avisa a todos |
-| `GET /api/history` | todos | Torneos guardados |
+| `POST /api/salas` | todos | Crea una sala; devuelve el código y la clave de edición |
+| `GET /api/salas/:codigo` | todos | Torneo de la sala |
+| `GET /api/salas/:codigo/eventos` | todos | Cambios en vivo (SSE) |
+| `POST /api/salas/:codigo` | con clave | Guarda y avisa a todos |
+
+**Seguridad:** la clave se guarda solo como hash, se compara en tiempo constante y vive en el navegador del organizador. El servidor limita la creación de salas por IP, el tamaño de cada torneo y los espectadores por sala, y manda CSP estricta, `nosniff` y `frame-ancestors 'none'`.
 
 ---
 
 ## English
 
-LLAVES is a live tournament bracket generator: league, single elimination and double elimination. The organizer edits with a key and everyone with the link sees results update in real time (Server-Sent Events). It includes automatic standings, a poster-style PDF, saved history, and JSON import and export.
+LLAVES is a live tournament bracket generator: league, single elimination and double elimination. Creating a tournament opens a room with a 6-character code; anyone with the link watches results update in real time (Server-Sent Events). Nothing is stored: rooms live in memory and expire 24 hours after their last change. Try it at [llaves.jotapol.com](https://llaves.jotapol.com).
 
 ```bash
 npm install
-ADMIN_KEY=your-key npm start   # http://localhost:3000
+npm start   # http://localhost:3000
 ```
-
-Set `DATABASE_URL` (Postgres) to persist tournaments across restarts.
 
 ---
 
