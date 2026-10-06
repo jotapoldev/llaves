@@ -35,7 +35,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src https://fonts.gstatic.com",
   "img-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' https://jotapol.com",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",

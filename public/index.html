@@ -606,6 +606,8 @@
     * { animation-duration: 0.01ms !important; transition-duration: 80ms !important; }
   }
 </style>
+<!-- Taplog: cuenta la visita (página y de dónde llegó), sin datos de la persona. -->
+<script>(()=>{let l;const h=()=>{const p=location.pathname;if(p===l)return;const r=l?location.origin+"/":document.referrer,q=l?"":location.search;l=p;navigator.sendBeacon("https://jotapol.com/r/hit",JSON.stringify({s:"llaves",p,r,q}))},w=history.pushState;history.pushState=function(){w.apply(this,arguments);h()};addEventListener("popstate",h);h()})()</script>
 </head>
 <body>
 <div class="wrap">
