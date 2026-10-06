@@ -9,11 +9,10 @@ Pruebalo en **[llaves.jotapol.com](https://llaves.jotapol.com)**.
 - **Tres formatos:** liga (ida o ida y vuelta), eliminación directa y doble eliminación con gran final.
 - **Salas con código:** cada torneo tiene un código de 6 caracteres. El link para ver se comparte; el link de organizador trae la clave para editar.
 - **En vivo:** los espectadores ven cada resultado al instante (Server-Sent Events).
-- **Sin datos guardados:** todo vive en memoria y la sala se borra 24 horas después de su último cambio. Sin cuentas, sin base de datos, sin cookies.
+- **Sin datos guardados:** todo vive en memoria y la sala se borra 24 horas después de su último cambio. Sin cuentas ni base de datos.
 - **Posiciones automáticas:** tabla de liga con goles y diferencia; en eliminación, hasta qué ronda llegó cada equipo.
 - **PDF tipo póster:** imprime el cuadro con el campeón al centro.
-- **Historial local:** guarda torneos en tu navegador para volver a abrirlos.
-- **Exportar e importar** cualquier torneo en JSON.
+- **Descargar y abrir:** el torneo se baja como archivo `.json` para seguirlo otro día.
 
 | Configurar | En el celular |
 | --- | --- |

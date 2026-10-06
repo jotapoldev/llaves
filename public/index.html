@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <title>LLAVES — Generador de Torneos · JOTAPOL</title>
 <meta name="author" content="JOTAPOL" />
 <meta name="copyright" content="© 2026 JOTAPOL DEV · Apache-2.0" />
@@ -26,24 +27,7 @@
     --grain: 0.025;
   }
 
-  :root[data-theme="light"] {
-    --bg: #eceff5;
-    --panel: #ffffff;
-    --panel-2: #f1f4f9;
-    --line: #d9dfe9;
-    --ink: #16202e;
-    --muted: #647186;
-    --lime: #4f8a00;
-    --lime-dim: #3c6a00;
-    --gold: #b07d12;
-    --red: #d23b40;
-    --grain: 0.015;
-  }
-
-  html { transition: background 300ms ease; }
-  :root[data-theme="light"] body { background: #eceff5; }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  * { margin: 0;  * { margin: 0; padding: 0; box-sizing: border-box; }
 
   html, body { height: 100%; }
 
@@ -67,7 +51,8 @@
     pointer-events: none; z-index: 9999; mix-blend-mode: overlay;
   }
 
-  .wrap { max-width: 100%; padding: 28px clamp(16px, 4vw, 56px) 80px; }
+  .wrap { max-width: 100%; padding: 28px clamp(16px, 4vw, 56px) 24px; }
+  html { background: var(--bg); }
 
   header.top {
     display: flex; align-items: flex-end; justify-content: space-between;
@@ -632,14 +617,11 @@
     </div>
     <div class="top-actions">
       <span class="ro-badge" id="roBadge" hidden><span class="live-dot"></span><span id="roBadgeText">Solo lectura</span></span>
-      <button class="btn btn-ghost icon-btn" id="btnTheme" type="button" aria-label="Cambiar tema" title="Cambiar tema"><span id="themeIcon">☾</span></button>
-      <button class="btn btn-ghost" id="btnPrint" type="button">🖨 Imprimir</button>
+      <button class="btn btn-ghost" id="btnPrint" type="button" hidden>🖨 Imprimir</button>
       <button class="btn btn-ghost" id="btnUnlock" type="button">🔓 Editar</button>
-      <button class="btn btn-ghost" id="btnLock" type="button" hidden>🔒 Salir edición</button>
-      <button class="btn btn-ghost admin-only" id="btnSave" hidden>⭳ Guardar</button>
-      <button class="btn btn-ghost admin-only" id="btnHistory" type="button">🗂 Historial</button>
-      <button class="btn btn-ghost admin-only" id="btnExport" type="button">⤓ Exportar</button>
-      <button class="btn btn-ghost admin-only" id="btnImport" type="button">⤴ Importar</button>
+      <button class="btn btn-ghost admin-only" id="btnExport" type="button" hidden title="Descarga un archivo con el torneo para seguirlo otro día">⤓ Descargar torneo</button>
+      <button class="btn btn-ghost admin-only" id="btnImport" type="button" title="Abre un torneo que descargaste antes">⤴ Abrir torneo descargado</button>
+      <input type="file" id="fileImport" accept=".json,application/json" hidden>
       <button class="btn btn-ghost admin-only" id="btnAddTeam" hidden>➕ Equipo</button>
       <button class="btn btn-ghost admin-only" id="btnEdit" hidden>✎ Editar equipos</button>
       <button class="btn btn-danger btn-ghost admin-only" id="btnReset" hidden>↺ Reiniciar</button>
@@ -651,7 +633,7 @@
     <span class="share-code">Sala <b id="salaCode">——</b></span>
     <button class="btn btn-ghost" id="btnCopyView" type="button">🔗 Copiar link para ver</button>
     <button class="btn btn-ghost admin-only" id="btnCopyEdit" type="button">🔑 Copiar link de organizador</button>
-    <span class="share-note">Se borra 24 h después del último cambio. Exportá el JSON si querés guardarlo.</span>
+    <span class="share-note">Se borra 24 h después del último cambio. Para seguirlo otro día, tocá «Descargar torneo» y después «Abrir torneo descargado».</span>
   </div>
 
   <!-- WAITING (read-only, no tournament yet) -->
@@ -754,20 +736,8 @@
   <footer class="foot">
     <span id="footHint">Anota los goles de cada partido</span>
     <span class="copyright">© 2026 JOTAPOL DEV · Apache-2.0</span>
-    <span class="sync-pill"><span class="live-dot"></span><span id="syncPill">Sincronizado en la nube</span></span>
+    <span class="sync-pill"><span class="live-dot"></span><span id="syncPill">En vivo</span></span>
   </footer>
-</div>
-
-<!-- HISTORY MODAL -->
-<div class="overlay hidden" id="historyModal">
-  <div class="modal">
-    <div class="modal-head">
-      <h3>🗂 Historial de torneos</h3>
-      <button class="btn btn-ghost icon-btn" id="btnCloseHistory" aria-label="Cerrar">✕</button>
-    </div>
-    <p class="modal-hint" id="historyHint"></p>
-    <div class="history-list" id="historyList"></div>
-  </div>
 </div>
 
 <!-- DIALOG (alert / confirm / prompt) -->
@@ -801,8 +771,6 @@ let setupNames = []; // names while editing setup
 let selectedFormat = "league"; // "league" | "elim"
 let selectedLegs = 1; // 1 = solo ida, 2 = ida y vuelta
 
-const KEY_SAVED = "llaves.saved.v1";
-const KEY_THEME = "llaves.theme";
 
 /* ---------- sync / roles (salas) ---------- */
 let IS_ADMIN = false;   // puede editar esta sala
@@ -917,146 +885,11 @@ function load() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { 
 function clearSaved() { localStorage.removeItem(KEY); }
 
 /* ---------- theme ---------- */
-function applyTheme(t) {
-  if (t === "light") document.documentElement.setAttribute("data-theme", "light");
-  else document.documentElement.removeAttribute("data-theme");
-  $("#themeIcon").textContent = t === "light" ? "☀" : "☾";
-  localStorage.setItem(KEY_THEME, t);
-}
-function toggleTheme() {
-  const cur = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-  applyTheme(cur === "light" ? "dark" : "light");
-}
-
-/* ---------- torneos guardados (solo en este navegador) ---------- */
-let historyCache = [];
-async function historyList() { try { return JSON.parse(localStorage.getItem(KEY_SAVED)) || []; } catch { return []; } }
-async function historyUpsert(entry) {
-  const arr = await historyList();
-  const i = arr.findIndex(e => e.id === entry.id);
-  if (i >= 0) arr[i] = entry; else arr.push(entry);
-  try { localStorage.setItem(KEY_SAVED, JSON.stringify(arr)); } catch {}
-}
-async function historyDelete(id) {
-  try { localStorage.setItem(KEY_SAVED, JSON.stringify((await historyList()).filter(e => e.id !== id))); } catch {}
-}
-
-function fmtDate(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString("es", { day: "2-digit", month: "short" }) + " " +
-         d.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" });
-}
-
-function summarize(state) {
-  if (state.format === "double") {
-    const champ = deChampion(state);
-    return (champ && champ !== "BYE") ? { label: "Campeón", who: champ, done: true } : { label: "En juego", who: "—", done: false };
-  }
-  if (state.format === "elim") {
-    const fr = state.rounds[state.rounds.length - 1][0];
-    const champ = fr.winner ? (fr.winner === 1 ? fr.p1 : fr.p2) : null;
-    return champ ? { label: "Campeón", who: champ, done: true } : { label: "En juego", who: "—", done: false };
-  } else {
-    let played = 0, total = 0;
-    state.fixtures.forEach(r => r.forEach(m => { if (!m.bye) { total++; if (m.hg != null && m.ag != null) played++; } }));
-    const rows = computeStandings(state);
-    const leader = rows[0];
-    const done = played === total;
-    return { label: done ? "Ganó" : "Líder", who: leader ? leader.team : "—", done };
-  }
-}
-
-async function saveCurrent() {
-  if (!STATE) return;
-  const def = fmtLabel(STATE.format) + " · " + STATE.teams.length + " equipos";
-  const raw = await uiPrompt("Nombre del torneo:", { title: "⭳ Guardar", value: def });
-  if (raw == null) return;
-  const name = raw.trim();
-  if (!name) return;
-  const arr = await historyList();
-  let targetId = STATE._id || null;
-  const byName = arr.find(e => e.name === name && e.id !== STATE._id);
-  if (byName) {
-    const ow = await uiConfirm("Ya existe un torneo guardado llamado «" + name + "». ¿Sobrescribirlo?", { title: "Sobrescribir", okText: "Sobrescribir" });
-    if (ow) targetId = byName.id;
-    else if (targetId === null) targetId = "t" + Date.now();
-  }
-  if (!targetId) targetId = "t" + Date.now();
-  const date = (byName && targetId === byName.id) ? byName.date : Date.now();
-  STATE._id = targetId; STATE._name = name; STATE._date = date;
-  const snapshot = JSON.parse(JSON.stringify(STATE));
-  await historyUpsert({ id: targetId, name, date, state: snapshot });
-  save(STATE);
-  flashBtn($("#btnSave"), "✓ Guardado");
-}
-
-function loadSavedTournament(entry) {
-  STATE = JSON.parse(JSON.stringify(entry.state));
-  STATE._id = entry.id; STATE._name = entry.name; STATE._date = entry.date;
-  if (!STATE.format) STATE.format = STATE.wb ? "double" : (STATE.fixtures ? "league" : "elim");
-  selectedFormat = STATE.format;
-  setupNames = STATE.teams.slice();
-  save(STATE);
-  closeHistory();
-  showTournament();
-}
-
-async function deleteSavedTournament(id) {
-  const ok = await uiConfirm("¿Borrar este torneo del historial?", { title: "Borrar", okText: "Borrar", danger: true });
-  if (!ok) return;
-  await historyDelete(id);
-  renderHistory();
-}
-
 function flashBtn(btn, text) {
   const old = btn.textContent;
   btn.textContent = text;
   setTimeout(() => { btn.textContent = old; }, 1400);
 }
-
-function openHistory() { $("#historyModal").classList.remove("hidden"); renderHistory(); }
-function closeHistory() { $("#historyModal").classList.add("hidden"); }
-
-async function renderHistory() {
-  const list = $("#historyList");
-  list.innerHTML = "";
-  $("#historyHint").textContent = "Cargando…";
-  const arr = (await historyList()).sort((a, b) => b.date - a.date);
-  historyCache = arr;
-  $("#historyHint").textContent = arr.length + " torneo(s) guardado(s) en la nube.";
-  if (!arr.length) {
-    const e = el("div", "history-empty");
-    e.textContent = "Sin torneos guardados. Usa ⭳ Guardar para añadir el actual.";
-    list.append(e);
-    return;
-  }
-  arr.forEach(entry => {
-    const s = entry.state;
-    const sum = summarize(s);
-    const item = el("div", "hist-item");
-    const badge = el("div", "hist-badge"); badge.textContent = fmtIcon(s.format);
-    const info = el("div", "hist-info");
-    const nm = el("div", "hist-name"); nm.textContent = entry.name;
-    const meta = el("div", "hist-meta");
-    meta.innerHTML = fmtLabel(s.format) + " · " + s.teams.length + " equipos · " +
-                     fmtDate(entry.date) + " · " + sum.label + ": <b>" + escapeHtml(sum.who) + "</b>";
-    info.append(nm, meta);
-    const actions = el("div", "hist-actions");
-    const bLoad = el("button", "btn btn-primary"); bLoad.textContent = "Cargar";
-    bLoad.addEventListener("click", () => loadSavedTournament(entry));
-    const bDel = el("button", "btn btn-ghost btn-danger"); bDel.textContent = "✕";
-    bDel.addEventListener("click", () => deleteSavedTournament(entry.id));
-    actions.append(bLoad, bDel);
-    item.append(badge, info, actions);
-    list.append(item);
-  });
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-function fmtLabel(f) { return f === "elim" ? "Eliminación" : f === "double" ? "Doble elim" : "Liga"; }
-function fmtIcon(f) { return f === "elim" ? "🏆" : f === "double" ? "🔀" : "⚽"; }
 
 /* ---------- setup UI ---------- */
 function renderNameInputs() {
@@ -1868,7 +1701,8 @@ function showWaiting() {
   $("#waitingView").classList.remove("hidden");
   $("#btnEdit").hidden = true;
   $("#btnReset").hidden = true;
-  $("#btnSave").hidden = true;
+  $("#btnPrint").hidden = true;
+  $("#btnExport").hidden = true;
   $("#btnAddTeam").hidden = true;
 }
 function showSetup() {
@@ -1878,7 +1712,8 @@ function showSetup() {
   $("#leagueView").classList.add("hidden");
   $("#btnEdit").hidden = true;
   $("#btnReset").hidden = true;
-  $("#btnSave").hidden = true;
+  $("#btnPrint").hidden = true;
+  $("#btnExport").hidden = true;
   $("#btnAddTeam").hidden = true;
   setFormatUI(selectedFormat);
   setLegsUI(selectedLegs);
@@ -1889,7 +1724,8 @@ function showTournament() {
   $("#setupView").classList.add("hidden");
   $("#btnEdit").hidden = READONLY;
   $("#btnReset").hidden = READONLY;
-  $("#btnSave").hidden = READONLY;
+  $("#btnPrint").hidden = false;
+  $("#btnExport").hidden = READONLY;
   $("#btnAddTeam").hidden = READONLY;
   $("#bracketView").classList.add("hidden");
   $("#leagueView").classList.add("hidden");
@@ -2043,18 +1879,11 @@ $("#btnReset").addEventListener("click", async () => {
   schedulePush(); // empuja null → otros vuelven a "esperando"
   showSetup();
 });
-$("#btnTheme").addEventListener("click", toggleTheme);
-$("#btnSave").addEventListener("click", saveCurrent);
-$("#btnHistory").addEventListener("click", openHistory);
-$("#btnCloseHistory").addEventListener("click", closeHistory);
-$("#historyModal").addEventListener("click", (e) => { if (e.target === $("#historyModal")) closeHistory(); });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("#dlg").classList.contains("hidden")) dlgClose(dlgMode.input ? null : false);
-  else closeHistory();
 });
 $("#btnUnlock").addEventListener("click", unlockEditing);
-$("#btnLock").addEventListener("click", lockEditing);
 $("#btnPrint").addEventListener("click", () => window.print());
 let _docTitle = document.title;
 window.addEventListener("beforeprint", () => {
@@ -2296,43 +2125,43 @@ $("#dlg").addEventListener("click", (e) => { if (e.target === $("#dlg")) dlgClos
 $("#dlgInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) dlgClose($("#dlgInput").value); });
 
 /* ---------- export / import ---------- */
-async function exportState() {
-  if (!STATE) { uiAlert("No hay torneo activo para exportar."); return; }
-  const json = JSON.stringify(STATE);
-  try {
-    await navigator.clipboard.writeText(json);
-    flashBtn($("#btnExport"), "✓ Copiado");
-  } catch {
-    await uiPrompt("Copia este JSON:", { title: "Exportar", value: json, multiline: true, okText: "Listo" });
-  }
+function exportState() {
+  if (!STATE) return;
+  const nombre = "llaves-" + (SALA || "torneo") + "-" + new Date().toISOString().slice(0, 10) + ".json";
+  const url = URL.createObjectURL(new Blob([JSON.stringify(STATE, null, 2)], { type: "application/json" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: nombre });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  flashBtn($("#btnExport"), "✓ Descargado");
 }
 
-async function importState() {
-  const raw = await uiPrompt("Pega el JSON del torneo:", { title: "Importar torneo", multiline: true });
-  if (!raw) return;
+function importState() { $("#fileImport").click(); }
+$("#fileImport").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
   let data;
-  try { data = JSON.parse(raw.trim()); }
-  catch { await uiAlert("JSON inválido."); return; }
+  try { data = JSON.parse(await file.text()); }
+  catch { await uiAlert("Ese archivo no es un torneo de LLAVES. Abrí el .json que descargaste con «Descargar torneo».", { title: "No se pudo abrir" }); return; }
   if (!data || !data.teams || !(data.rounds || data.fixtures || data.wb)) {
-    await uiAlert("El JSON no parece un torneo válido.");
+    await uiAlert("Ese archivo no es un torneo de LLAVES. Abrí el .json que descargaste con «Descargar torneo».", { title: "No se pudo abrir" });
     return;
   }
-  delete data._id; // entra como torneo activo, no atado a historial
   STATE = data;
   if (!STATE.format) STATE.format = STATE.wb ? "double" : (STATE.fixtures ? "league" : "elim");
   selectedFormat = STATE.format;
   selectedLegs = STATE.legs || 1;
   setupNames = STATE.teams.slice();
-  save(STATE);          // si sos admin, lo empuja al server
+  save(STATE);          // crea la sala si hace falta y avisa a todos
   showTournament();
-  flashBtn($("#btnImport"), "✓ Importado");
-}
+  flashBtn($("#btnImport"), "✓ Abierto");
+});
 
 /* ---------- role UI ---------- */
 function setSyncPill(ok) {
   const pill = $("#syncPill");
   if (!pill) return;
-  pill.textContent = ok ? "● Sincronizado" : "● Sin conexión";
+  pill.textContent = ok ? "● En vivo" : "● Sin conexión";
   pill.style.color = ok ? "" : "var(--red)";
 }
 
@@ -2364,26 +2193,8 @@ async function unlockEditing() {
   else { syncCount(8); showSetup(); }
 }
 
-async function lockEditing() {
-  IS_ADMIN = false; READONLY = true;
-  applyRoleUI();
-  closeHistory();
-  subscribeLive(); // vuelve a recibir cambios en vivo
-  const srv = await serverGet();
-  if (srv && srv.teams) {
-    STATE = srv;
-    if (!STATE.format) STATE.format = STATE.wb ? "double" : (STATE.fixtures ? "league" : "elim");
-    showTournament();
-  } else if (STATE) {
-    showTournament();
-  } else {
-    showWaiting();
-  }
-}
-
 /* ---------- boot ---------- */
 (async function boot() {
-  applyTheme(localStorage.getItem(KEY_THEME) === "light" ? "light" : "dark");
 
   // Sin sala: cualquiera arma su torneo; la sala se crea al generar.
   if (!SALA) {
